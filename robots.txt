@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://hanshs474.github.io/aigif-loop-checker/sitemap.xml

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GIF Loop Count &amp; Frame Timing Checker</title>
+<meta name="description" content="Inspect animated GIF Netscape loop count, per-frame GCE delay timing, and browser 10ms clamping locally in your browser — and patch loop count without re-encoding.">
+<link rel="canonical" href="https://hanshs474.github.io/aigif-loop-checker/">
+<style>*{box-sizing:border-box}body{margin:0;font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b0b12;color:#f1eff7}main{max-width:860px;margin:0 auto;padding:36px 20px 72px}h1{font-size:30px;line-height:1.25;margin:0 0 10px;letter-spacing:-.02em}h2{font-size:20px;margin:34px 0 10px}p.lead{color:#b4aec7;margin:0 0 24px;font-size:17px}.card{background:#141320;border:1px solid #29253c;border-radius:16px;padding:22px;margin:18px 0}label{display:block;font-size:13px;font-weight:600;color:#b4aec7;margin:14px 0 6px}input,select{width:100%;background:#0b0b12;color:#f1eff7;border:1px solid #352f4f;border-radius:10px;padding:10px 12px;font:inherit}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px}button.primary{background:#7c3aed;color:#fff;border:0;border-radius:10px;padding:11px 18px;font:600 15px inherit;cursor:pointer;margin-top:14px}.cta{display:inline-block;margin-top:10px;background:#7c3aed;color:#fff;text-decoration:none;padding:11px 18px;border-radius:10px;font-weight:600}a{color:#a78bfa}.muted{color:#968fb0;font-size:14px}table{width:100%;border-collapse:collapse;font-size:14px;margin-top:12px}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid #262238}th{color:#b4aec7;font-weight:600}img{max-width:100%;border-radius:10px;margin-top:12px}footer{margin-top:44px;color:#8e87a8;font-size:13px;border-top:1px solid #221e33;padding-top:18px}</style>
+</head>
+<body>
+<main>
+<h1>GIF Loop Count &amp; Frame Timing Checker</h1>
+<p class="lead">Upload any <code>.gif</code> to inspect its Netscape loop extension (infinite, N repeats, or play-once), total runtime, and per-frame delay blocks — or rewrite the loop count cleanly without losing quality.</p>
+
+<div class="card">
+  <label for="file">Select GIF file (processed 100% locally)</label>
+  <input id="file" type="file" accept="image/gif">
+  <div id="summary" class="muted" style="margin-top:12px">Waiting for a GIF file…</div>
+  <div id="controls" style="display:none;margin-top:14px">
+    <div class="row">
+      <div>
+        <label for="loops">New loop behavior (0 = infinite)</label>
+        <input id="loops" type="number" min="0" max="65535" value="0">
+      </div>
+    </div>
+    <button id="patchBtn" class="primary" type="button">Download GIF with updated loop count</button>
+    <div id="dlWrap" style="margin-top:10px"></div>
+  </div>
+  <div id="framesWrap"></div>
+</div>
+
+<h2>Why GIF loops and frame delays misbehave</h2>
+<p>Many encoders omit the <code>NETSCAPE2.0</code> application extension block when exporting a 1-shot animation, or write <code>0 ms</code> / <code>10 ms</code> frame delays that modern browsers clamp to <code>100 ms</code> (10 fps). For exact canvas resizing or byte budgeting after fixing loop timing, use <a href="https://aigifmaker.ai/gif-resizer?utm_source=githubio&amp;utm_medium=tool">GIF Resizer</a> or generate clean looping GIFs directly on <a href="https://aigifmaker.ai/?utm_source=githubio&amp;utm_medium=tool">AI GIF Maker</a>.</p>
+<a class="cta" href="https://aigifmaker.ai/gif-resizer?utm_source=githubio&amp;utm_medium=tool">Open GIF Resizer</a>
+
+<footer>
+  Free browser utility from <a href="https://aigifmaker.ai/?utm_source=githubio&amp;utm_medium=tool">AI GIF Maker</a> — Turn text into animated GIFs with AI GIF Maker. Native GIF generation — no video conversion. Type what you want and download your GIF in about a minute.
+</footer>
+</main>
+<script>
+let currentBytes = null, currentName = 'patched.gif', netscapeOffset = -1;
+function parseGif(buf) {
+  const u = new Uint8Array(buf);
+  if (u.length < 13 || String.fromCharCode(u[0],u[1],u[2]) !== 'GIF') throw new Error('Not a valid GIF header');
+  const w = u[6] | (u[7] << 8), h = u[8] | (u[9] << 8);
+  const gctFlag = (u[10] & 0x80) !== 0;
+  let pos = 13 + (gctFlag ? 3 * (1 << ((u[10] & 7) + 1)) : 0);
+  const skipSub = (p) => { while (p < u.length && u[p] !== 0) p += u[p] + 1; return p + 1; };
+  let loopCount = null, loopPos = -1, frames = [];
+  let lastDelayCs = 10;
+  while (pos < u.length) {
+    const b = u[pos];
+    if (b === 0x3B) break;
+    if (b === 0x21) {
+      const label = u[pos + 1];
+      if (label === 0xF9 && pos + 6 < u.length) {
+        lastDelayCs = u[pos + 4] | (u[pos + 5] << 8);
+        pos += u[pos + 2] + 4;
+        if (u[pos - 1] !== 0) pos = skipSub(pos - 1);
+      } else if (label === 0xFF && pos + 14 < u.length) {
+        const app = String.fromCharCode(...u.slice(pos + 3, pos + 14));
+        let sub = pos + 3 + u[pos + 2];
+        if (app === 'NETSCAPE2.0' && u[sub] === 3 && u[sub + 1] === 1) {
+          loopCount = u[sub + 2] | (u[sub + 3] << 8);
+          loopPos = sub + 2;
+        }
+        pos = skipSub(sub);
+      } else {
+        pos = skipSub(pos + 3);
+      }
+    } else if (b === 0x2C) {
+      const lct = (u[pos + 9] & 0x80) !== 0;
+      pos += 10 + (lct ? 3 * (1 << ((u[pos + 9] & 7) + 1)) : 0);
+      pos++; // LZW min code size
+      pos = skipSub(pos);
+      frames.push({ index: frames.length + 1, cs: lastDelayCs, ms: lastDelayCs * 10 });
+      lastDelayCs = 10;
+    } else {
+      break;
+    }
+  }
+  return { w, h, loopCount, loopPos, frames, u };
+}
+document.getElementById('file').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  currentName = f.name.replace(/\.gif$/i, '') + '-loop.gif';
+  try {
+    const res = parseGif(await f.arrayBuffer());
+    currentBytes = res.u;
+    netscapeOffset = res.loopPos;
+    const totalMs = res.frames.reduce((a, b) => a + (b.ms < 20 ? 100 : b.ms), 0);
+    const clamped = res.frames.filter(x => x.ms < 20).length;
+    const loopLabel = res.loopCount === null ? 'No NETSCAPE2.0 block (plays once)' : (res.loopCount === 0 ? 'Infinite (0)' : res.loopCount + ' repeats');
+    document.getElementById('summary').innerHTML = '<strong>' + res.w + '×' + res.h + '</strong> · ' + res.frames.length + ' frames · Loop: <strong>' + loopLabel + '</strong> · Effective runtime: <strong>' + (totalMs/1000).toFixed(2) + 's</strong>' + (clamped ? ' · <span style="color:#fbbf24">' + clamped + ' frame(s) &lt;20ms (browsers clamp to 100ms)</span>' : '');
+    document.getElementById('controls').style.display = res.loopPos > 0 ? 'block' : 'none';
+    if (res.loopCount !== null) document.getElementById('loops').value = res.loopCount;
+    const rows = res.frames.slice(0, 40).map(x => '<tr><td>#' + x.index + '</td><td>' + x.ms + ' ms</td><td>' + (x.ms < 20 ? 'Clamped to 100 ms in browsers' : 'OK') + '</td></tr>').join('');
+    document.getElementById('framesWrap').innerHTML = res.frames.length ? '<table><thead><tr><th>Frame</th><th>Declared Delay</th><th>Browser Playback</th></tr></thead><tbody>' + rows + '</tbody></table>' : '';
+  } catch (err) {
+    document.getElementById('summary').textContent = 'Error: ' + err.message;
+  }
+});
+document.getElementById('patchBtn').addEventListener('click', () => {
+  if (!currentBytes || netscapeOffset < 0) return;
+  const n = Math.max(0, Math.min(65535, parseInt(document.getElementById('loops').value || '0', 10)));
+  const out = new Uint8Array(currentBytes);
+  out[netscapeOffset] = n & 0xff;
+  out[netscapeOffset + 1] = (n >> 8) & 0xff;
+  const blobUrl = URL.createObjectURL(new Blob([out], { type: 'image/gif' }));
+  document.getElementById('dlWrap').innerHTML = '<a class="cta" download="' + currentName + '" href="' + blobUrl + '">Download ' + currentName + '</a>';
+});
+</script>
+</body>
+</html>
